@@ -143,7 +143,7 @@ if __name__ == "__main__":
         load_partial_state_dict(dethead, bestfile)
     criterion = CustomYOLOLoss()
     optimizer = torch.optim.AdamW(
-        dethead.parameters(), lr=1e-6, weight_decay=1e-4)
+        dethead.parameters(), lr=1e-5, weight_decay=1e-4)
     # optimizer = torch.optim.SGD(
     #     dethead.parameters(), lr=1e-5, momentum=0.9)
 
