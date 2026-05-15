@@ -175,9 +175,9 @@ class CustomYOLOLoss(nn.Module):
 
                 gt_area = w * h
                 if gt_area > 0.05:  # 大目标
-                    topk = 25
+                    topk = 30
                 elif gt_area > 0.02:  # 中目标
-                    topk = 10
+                    topk = 12
                 else:                # 小目标
                     topk = 5
                 k = min(topk, len(align_score))
