@@ -135,7 +135,7 @@ if __name__ == "__main__":
     imgsize = 512  # 448
     featuresize = imgsize//16
     maxnumpatches = int(featuresize*featuresize)
-    epochs = 35
+    epochs = 20
 
     dethead = AdaptedDetectHead().to(device)
     bestfile = 'dethead_yolo_best.pth'
