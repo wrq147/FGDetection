@@ -174,10 +174,12 @@ class CustomYOLOLoss(nn.Module):
                     self.alpha) * iou_cand.pow(self.beta)
 
                 gt_area = w * h
-                if gt_area > 0.02:
-                    topk = 30
-                else:
-                    topk = 15
+                if gt_area > 0.05:  # 大目标
+                    topk = 25
+                elif gt_area > 0.02:  # 中目标
+                    topk = 10
+                else:                # 小目标
+                    topk = 5
                 k = min(topk, len(align_score))
                 topk_val, topk_idx = torch.topk(align_score, k)
                 current_idx = cand_idx[topk_idx]
