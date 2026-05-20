@@ -191,8 +191,8 @@ def inference_image(img_path, class_names, save_name="res.jpg"):
         gy = grid_idx // featuresize
         gx = grid_idx % featuresize
 
-        cx = (gx + dx * 5 - 2.5)/featuresize
-        cy = (gy + dy * 5 - 2.5)/featuresize
+        cx = (gx + dx * 2 - 0.5)/featuresize
+        cy = (gy + dy * 2 - 0.5)/featuresize
 
         # 映射到 padded 图尺度
         cx_pad = cx * imgsize
