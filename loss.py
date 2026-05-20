@@ -127,8 +127,8 @@ class CustomYOLOLoss(nn.Module):
             dh = torch.sigmoid(pb[:, 3])  # 高度比例
 
             # 网格坐标
-            cx = (xs + dx * 5 - 2.5) / feat_w  # 最终归一化 cx
-            cy = (ys + dy * 5 - 2.5) / feat_h  # 最终归一化 cy
+            cx = (xs + dx * 2 - 0.5) / feat_w  # 最终归一化 cx
+            cy = (ys + dy * 2 - 0.5) / feat_h  # 最终归一化 cy
             w = dw                  # 最终归一化 w
             h = dh                  # 最终归一化 h
 
