@@ -37,22 +37,28 @@ def load_partial_state_dict(model, pthfile, map_location='cpu'):
     model.load_state_dict(model_dict)  # 加载更新后的字典
 
 
-
 class AdaptedDetectHead(nn.Module):
-    def __init__(self, hidden_dim=384):
+    def __init__(self):
         super().__init__()
-        self.hidden_dim = hidden_dim
-        self.scale = nn.Parameter(torch.ones(1) * 0.5)
+        self.logit_scale = nn.Parameter(torch.ones(1) * 2.6592)
+        self.logit_bias = nn.Parameter(torch.zeros(1))
+
+        self.fc = nn.Sequential(
+            nn.Linear(768, 768),
+            nn.LayerNorm(768),
+            nn.GELU(),
+            nn.Linear(768, 768),
+        )
 
         self.box_head = nn.Sequential(
-            nn.Conv2d(768, hidden_dim, kernel_size=3, padding=1),
-            nn.BatchNorm2d(hidden_dim),
+            nn.Conv2d(768, 384, kernel_size=3, padding=1),
+            nn.BatchNorm2d(384),
             nn.GELU(),
-            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3,
-                      padding=1, groups=hidden_dim),
-            nn.BatchNorm2d(hidden_dim),
+            nn.Conv2d(384, 384, kernel_size=3,
+                      padding=1, groups=384),
+            nn.BatchNorm2d(384),
             nn.GELU(),
-            nn.Conv2d(hidden_dim, 4, kernel_size=1)
+            nn.Conv2d(384, 4, kernel_size=1)
         )
 
         self.cls_head = nn.Sequential(
@@ -65,61 +71,44 @@ class AdaptedDetectHead(nn.Module):
             nn.Conv2d(192, 1, kernel_size=1)
         )
 
-        gauss_kernel = torch.tensor([
-            [1.0, 2.0, 1.0],
-            [2.0, 4.0, 2.0],
-            [1.0, 2.0, 1.0]
-        ]) / 16.0
-        self.register_buffer('gauss_kernel', gauss_kernel.view(1, 1, 3, 3))
-
-    def forward(self, last_hidden, dense_feat, text_feat):
+    def forward(self, last_hidden, text_feat):
         B = last_hidden.shape[0]
         featsize = int(last_hidden.shape[1] ** 0.5)  # 28
         N = text_feat.size(1)
-
-        text_feat = F.normalize(text_feat, dim=-1)
-        img_dense_feat = F.normalize(dense_feat, dim=-1)
-
-        # [B, 784, 768] -> [B, 768, 28, 28]
-        img_feat = last_hidden.view(
-            B, featsize, featsize, -1).permute(0, 3, 1, 2).contiguous()
-
-        # -------------------------- 框回归 --------------------------
-        box = self.box_head(img_feat)  # [B,4,28,28]
-        box = box.flatten(2)           # [B,4,784]
-
-        # -------------------------- 核心：einsum 批量相似度 --------------------------
+        fc_text_feat = F.normalize(text_feat, dim=-1)
+        fc_img_feat = self.fc(last_hidden)
+        fc_img_feat = F.normalize(fc_img_feat, dim=-1)
 
         # cls_feat: [B,784,768]
         # text_feat: [B,30,768]
         # out:       [B,784,30]
-        cls_sim = torch.matmul(img_dense_feat, text_feat.transpose(-1, -2))
-        cls_sim = cls_sim / self.scale
+        cls_sim = torch.matmul(fc_img_feat, fc_text_feat.transpose(-1, -2))
+        logit_scale = self.logit_scale.exp()
+        cls_sim = cls_sim * logit_scale + self.logit_bias
         cls_btm = cls_sim.view(
             B, featsize, featsize, -1).permute(0, 3, 1, 2).contiguous()  # [B,n,28,28]
-        sim_max, _ = cls_sim.max(dim=-1)  # [B,784]
 
-        sim_map = sim_max.view(B, 1, featsize, featsize)
-        sim_smooth = F.conv2d(sim_map, self.gauss_kernel.to(sim_map.device), padding=1)
-        sim_max_smoothed = sim_smooth.flatten(1)
-
+        max_sim, _ = cls_sim.max(dim=-1)
+        confidence = torch.sigmoid(max_sim)
+        sim_mean = cls_sim.mean(dim=-1)
+        sim_max_smoothed = sim_mean
         sim_max_min = sim_max_smoothed.amin(dim=1, keepdim=True)
         sim_max_max = sim_max_smoothed.amax(dim=1, keepdim=True)
-        sim_max = (sim_max_smoothed - sim_max_min) / \
+        sim_mean = (sim_max_smoothed - sim_max_min) / \
             (sim_max_max - sim_max_min + 1e-8)
-
-        mask = sim_max.unsqueeze(-1)          # [B,784,1]
-
-        final_feat = img_dense_feat * mask  # [B, 784, 768]
+        real_mm = confidence * sim_mean
+        mask = real_mm.unsqueeze(-1)          # [B,784,1]
+        final_feat = fc_img_feat * mask  # [B, 784, 768]
         final_feat = final_feat.permute(
             0, 2, 1).reshape(B, -1, featsize, featsize)
+
+        box = self.box_head(final_feat)  # [B,4,28,28]
+        box = box.flatten(2)           # [B,4,784]
 
         cls_map = self.cls_head(final_feat)
         cls_map = cls_map.flatten(2)
 
         return box, cls_map, cls_btm
-
-
 
 
 if __name__ == "__main__":
@@ -135,17 +124,18 @@ if __name__ == "__main__":
     imgsize = 512  # 448
     featuresize = imgsize//16
     maxnumpatches = int(featuresize*featuresize)
-    epochs = 20
+    epochs = 50
 
     dethead = AdaptedDetectHead().to(device)
     bestfile = 'dethead_yolo_best.pth'
     if os.path.exists(bestfile):
         load_partial_state_dict(dethead, bestfile)
     criterion = CustomYOLOLoss()
-    optimizer = torch.optim.AdamW(
-        dethead.parameters(), lr=1e-5, weight_decay=1e-4)
-    # optimizer = torch.optim.SGD(
-    #     dethead.parameters(), lr=1e-5, momentum=0.9)
+
+    # optimizer = torch.optim.AdamW(
+    #     dethead.parameters(), lr=1e-4, weight_decay=1e-4)
+    optimizer = torch.optim.SGD(
+        dethead.parameters(), lr=1e-5, momentum=0.9)
 
     class_file = os.path.join(script_dir, "custom", "data.txt")
     custom_root = os.path.join(script_dir, "custom")
@@ -172,9 +162,10 @@ if __name__ == "__main__":
         with torch.no_grad():
             for txt in train_dataset.global_class_set:
                 cap_in = tokenizer(
-                    txt, padding="max_length", max_length=64, truncation=True, return_tensors="pt"
+                    txt, padding="max_length", max_length=196, truncation=True, return_tensors="pt"
                 ).to(device)
-                feat = fgmodel.get_text_features(**cap_in, walk_type="box")
+                feat = fgmodel.get_text_features(
+                    **cap_in, walk_type="long")
                 text_feat_cache[txt] = feat.cpu()
         # 保存到文件
         torch.save(text_feat_cache, cache_path)
@@ -199,6 +190,7 @@ if __name__ == "__main__":
             images = [x[0] for x in batch]
             gt_boxes_batch = [x[1] for x in batch]
             gt_cls_names_list = [x[2] for x in batch]
+            gt_box_cls_indices = [x[3] for x in batch]
 
             B = len(images)
             optimizer.zero_grad()
@@ -208,8 +200,7 @@ if __name__ == "__main__":
             ).to(device)
 
             with torch.no_grad():
-                dense_feature, last_hidden = fgmodel.get_image_dense_feature(
-                    **image_input)
+                last_hidden = fgmodel.get_vision_feature(**image_input)
                 text_feat_list = []
                 for i in range(B):
                     txts = gt_cls_names_list[i]
@@ -221,10 +212,9 @@ if __name__ == "__main__":
                     text_feat_list.append(text_feat)
                 batch_text_feat = torch.stack(text_feat_list).to(device)
 
-            pred_box, cls, cls_btm = dethead(
-                last_hidden, dense_feature, batch_text_feat)
+            pred_box, cls, cls_btm = dethead(last_hidden, batch_text_feat)
             loss = criterion(pred_box, gt_boxes_batch,
-                             featuresize, featuresize, cls, cls_btm)
+                             featuresize, featuresize, cls, cls_btm, gt_box_cls_indices)
 
             loss.backward()
             optimizer.step()
@@ -247,14 +237,14 @@ if __name__ == "__main__":
                 images = [x[0] for x in batch]
                 gt_boxes_batch = [x[1] for x in batch]
                 gt_cls_names_list = [x[2] for x in batch]
+                gt_box_cls_indices = [x[3] for x in batch]
 
                 B = len(images)
 
                 image_input = image_processor(
                     images=images, max_num_patches=maxnumpatches, return_tensors="pt"
                 ).to(device)
-                dense_feature, last_hidden = fgmodel.get_image_dense_feature(
-                    **image_input)
+                last_hidden = fgmodel.get_vision_feature(**image_input)
 
                 text_feat_list = []
                 for i in range(B):
@@ -267,11 +257,10 @@ if __name__ == "__main__":
                     text_feat_list.append(text_feat)
                 batch_text_feat = torch.stack(text_feat_list).to(device)
 
-                pred_box, cls, cls_btm = dethead(
-                    last_hidden, dense_feature, batch_text_feat)
+                pred_box, cls, cls_btm = dethead(last_hidden, batch_text_feat)
 
                 val_loss = criterion(
-                    pred_box, gt_boxes_batch, featuresize, featuresize, cls, cls_btm)
+                    pred_box, gt_boxes_batch, featuresize, featuresize, cls, cls_btm, gt_box_cls_indices)
                 total_val_loss += val_loss.item()
 
                 # 实时更新验证进度条
