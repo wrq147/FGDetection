@@ -16,20 +16,27 @@ matplotlib.use('Agg')
 
 
 class AdaptedDetectHead(nn.Module):
-    def __init__(self, hidden_dim=384):
+    def __init__(self):
         super().__init__()
-        self.hidden_dim = hidden_dim
-        self.scale = nn.Parameter(torch.ones(1) * 0.5)
+        self.logit_scale = nn.Parameter(torch.ones(1) * 2.6592)
+        self.logit_bias = nn.Parameter(torch.zeros(1))
+
+        self.fc = nn.Sequential(
+            nn.Linear(768, 768),
+            nn.LayerNorm(768),
+            nn.GELU(),
+            nn.Linear(768, 768),
+        )
 
         self.box_head = nn.Sequential(
-            nn.Conv2d(768, hidden_dim, kernel_size=3, padding=1),
-            nn.BatchNorm2d(hidden_dim),
+            nn.Conv2d(768, 384, kernel_size=3, padding=1),
+            nn.BatchNorm2d(384),
             nn.GELU(),
-            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3,
-                      padding=1, groups=hidden_dim),
-            nn.BatchNorm2d(hidden_dim),
+            nn.Conv2d(384, 384, kernel_size=3,
+                      padding=1, groups=384),
+            nn.BatchNorm2d(384),
             nn.GELU(),
-            nn.Conv2d(hidden_dim, 4, kernel_size=1)
+            nn.Conv2d(384, 4, kernel_size=1)
         )
 
         self.cls_head = nn.Sequential(
@@ -42,59 +49,46 @@ class AdaptedDetectHead(nn.Module):
             nn.Conv2d(192, 1, kernel_size=1)
         )
 
-        gauss_kernel = torch.tensor([
-            [1.0, 2.0, 1.0],
-            [2.0, 4.0, 2.0],
-            [1.0, 2.0, 1.0]
-        ]) / 16.0
-        self.register_buffer('gauss_kernel', gauss_kernel.view(1, 1, 3, 3))
-
-    def forward(self, last_hidden, dense_feat, text_feat):
+    def forward(self, last_hidden, text_feat):
         B = last_hidden.shape[0]
         featsize = int(last_hidden.shape[1] ** 0.5)  # 28
         N = text_feat.size(1)
-
-        text_feat = F.normalize(text_feat, dim=-1)
-        img_dense_feat = F.normalize(dense_feat, dim=-1)
-
-        # [B, 784, 768] -> [B, 768, 28, 28]
-        img_feat = last_hidden.view(
-            B, featsize, featsize, -1).permute(0, 3, 1, 2).contiguous()
-
-        # -------------------------- 框回归 --------------------------
-        box = self.box_head(img_feat)  # [B,4,28,28]
-        box = box.flatten(2)           # [B,4,784]
-
-        # -------------------------- 核心：einsum 批量相似度 --------------------------
+        fc_text_feat = F.normalize(text_feat, dim=-1)
+        fc_img_feat = self.fc(last_hidden)
+        fc_img_feat = F.normalize(fc_img_feat, dim=-1)
 
         # cls_feat: [B,784,768]
         # text_feat: [B,30,768]
         # out:       [B,784,30]
-        cls_sim = torch.matmul(img_dense_feat, text_feat.transpose(-1, -2))
-        cls_sim = cls_sim / self.scale
+        cls_sim = torch.matmul(fc_img_feat, fc_text_feat.transpose(-1, -2))
+        logit_scale = self.logit_scale.exp()
+        cls_sim = cls_sim * logit_scale + self.logit_bias
         cls_btm = cls_sim.view(
             B, featsize, featsize, -1).permute(0, 3, 1, 2).contiguous()  # [B,n,28,28]
-        sim_max, _ = cls_sim.max(dim=-1)  # [B,784]
 
-        sim_map = sim_max.view(B, 1, featsize, featsize)
-        sim_smooth = F.conv2d(sim_map, self.gauss_kernel.to(sim_map.device), padding=1)
-        sim_max_smoothed = sim_smooth.flatten(1)
-
+        max_sim, _ = cls_sim.max(dim=-1)
+        confidence = torch.sigmoid(max_sim)
+        sim_mean = cls_sim.mean(dim=-1)
+        sim_max_smoothed = sim_mean
         sim_max_min = sim_max_smoothed.amin(dim=1, keepdim=True)
         sim_max_max = sim_max_smoothed.amax(dim=1, keepdim=True)
-        sim_max = (sim_max_smoothed - sim_max_min) / \
+        sim_mean = (sim_max_smoothed - sim_max_min) / \
             (sim_max_max - sim_max_min + 1e-8)
-
-        mask = sim_max.unsqueeze(-1)          # [B,784,1]
-
-        final_feat = img_dense_feat * mask  # [B, 784, 768]
+        real_mm = confidence * sim_mean
+        mask = real_mm.unsqueeze(-1)          # [B,784,1]
+        final_feat = fc_img_feat * mask  # [B, 784, 768]
         final_feat = final_feat.permute(
             0, 2, 1).reshape(B, -1, featsize, featsize)
+
+        box = self.box_head(final_feat)  # [B,4,28,28]
+        box = box.flatten(2)           # [B,4,784]
 
         cls_map = self.cls_head(final_feat)
         cls_map = cls_map.flatten(2)
 
         return box, cls_map, cls_btm
+
+
 
 
 # ===================== 全局配置 =====================
@@ -103,7 +97,7 @@ imgsize = 512
 featuresize = imgsize // 16
 maxnumpatches = featuresize * featuresize
 # 中心点置信度阈值（按需调）
-CENTER_THRESH = 0.8
+CENTER_THRESH = 0.6
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 model_file = os.path.join(script_dir, "fgmodel")
@@ -151,20 +145,19 @@ def inference_image(img_path, class_names, save_name="res.jpg"):
     text_tokens = tokenizer(
         class_names,
         padding="max_length",
-        max_length=64,
+        max_length=196,
         truncation=True,
         return_tensors="pt"
     ).to(device)
 
     with torch.no_grad():
-        dense_feature, last_hidden = fgmodel.get_image_dense_feature(
+        last_hidden = fgmodel.get_vision_feature(
             **image_input)
 
-        text_feat = fgmodel.get_text_features(**text_tokens, walk_type="box")
+        text_feat = fgmodel.get_text_features(**text_tokens, walk_type="long")
         text_feat = text_feat.unsqueeze(0)
         # 检测头前向
-        pred_box, pred_cls, pred_sim = dethead(
-            last_hidden, dense_feature, text_feat)
+        pred_box, pred_cls, pred_sim = dethead(last_hidden, text_feat)
         # 解析输出
         pred_box = pred_box.squeeze(0).permute(1, 0)
         pred_sim = pred_sim.flatten(2).permute(0, 2, 1).squeeze(0)
@@ -187,18 +180,20 @@ def inference_image(img_path, class_names, save_name="res.jpg"):
         dy = torch.sigmoid(box_tensor[1])
         bw = torch.sigmoid(box_tensor[2])
         bh = torch.sigmoid(box_tensor[3])
+        w = bw
+        h = bh
 
         gy = grid_idx // featuresize
         gx = grid_idx % featuresize
 
-        cx = (gx + dx * 2 - 0.5)/featuresize
-        cy = (gy + dy * 2 - 0.5)/featuresize
+        cx = (gx + dx * 3 - 1.5)/featuresize
+        cy = (gy + dy * 3 - 1.5)/featuresize
 
         # 映射到 padded 图尺度
         cx_pad = cx * imgsize
         cy_pad = cy * imgsize
-        bw_pad = bw * imgsize
-        bh_pad = bh * imgsize
+        bw_pad = w * imgsize
+        bh_pad = h * imgsize
 
         # 去除padding偏移
         cx_raw = cx_pad - pad_x
@@ -240,7 +235,7 @@ def inference_image(img_path, class_names, save_name="res.jpg"):
                           dtype=torch.float32).to(device)
 
     # 执行 NMS
-    keep_idx = nms(boxes[:, :4], scores, iou_threshold=0.3)
+    keep_idx = nms(boxes[:, :4], scores, iou_threshold=0.2)
     keep_idx = keep_idx.cpu().numpy()
 
     # 只保留 NMS 后的结果
@@ -275,6 +270,6 @@ def inference_image(img_path, class_names, save_name="res.jpg"):
 if __name__ == "__main__":
     # 替换为你的测试图片路径
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    test_img = os.path.join(script_dir, "cat.jpg")
+    test_img = os.path.join(script_dir, "car.png")
     inference_image(test_img, class_names=[
-                    "黑猫"], save_name="detect_result_nms.jpg")
+                    "车牌"], save_name="detect_result_nms.jpg")
