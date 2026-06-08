@@ -10,7 +10,8 @@ class CustomYOLOLoss(nn.Module):
         self.beta = beta
         self.focal_alpha = focal_alpha
         self.focal_gamma = focal_gamma
-        self.bce = nn.BCEWithLogitsLoss()
+        self.ce_loss = nn.CrossEntropyLoss()
+
         gauss_kernel = torch.tensor([
             [1.0, 2.0, 1.0],
             [2.0, 4.0, 2.0],
@@ -87,7 +88,7 @@ class CustomYOLOLoss(nn.Module):
 
         return loss.mean() if loss.numel() > 0 else 0.0
 
-    def forward(self, pred_box, gt_box, feat_w, feat_h, pred_cls, cls_btm):
+    def forward(self, pred_box, gt_box, feat_w, feat_h, pred_cls, cls_btm, gt_box_cls_indices):
         device = pred_box.device
         N = feat_w * feat_h
         B = pred_box.shape[0]
@@ -106,18 +107,9 @@ class CustomYOLOLoss(nn.Module):
         xs_norm = xs / feat_w
         ys_norm = ys / feat_h
 
-        sim_map = cls_btm.max(dim=1)[0].flatten(1)  # 每个位置最大文本相似度
-
-        sim_map = sim_map.view(B, 1, feat_h, feat_w)  
-        sim_smooth = F.conv2d(sim_map, self.gauss_kernel.to(device), padding=1)
-        sim_smooth = sim_smooth.flatten(1)  # [B,N]
+        cls_btm_flat = cls_btm.flatten(2)
 
         for b in range(B):
-            text_mask = sim_smooth[b]
-            text_mask = (text_mask - text_mask.min()) / \
-                (text_mask.max() - text_mask.min() + 1e-8)
-            text_mask = text_mask.detach()
-
             pb = pred_box[b].permute(1, 0)          # [N,4]
             pc = pred_cls[b].squeeze(0)          # [N]
 
@@ -126,11 +118,12 @@ class CustomYOLOLoss(nn.Module):
             dw = torch.sigmoid(pb[:, 2])  # 宽度比例
             dh = torch.sigmoid(pb[:, 3])  # 高度比例
 
+
             # 网格坐标
-            cx = (xs + dx * 2 - 0.5) / feat_w  # 最终归一化 cx
-            cy = (ys + dy * 2 - 0.5) / feat_h  # 最终归一化 cy
-            w = dw                  # 最终归一化 w
-            h = dh                  # 最终归一化 h
+            cx = (xs + dx * 3 - 1.5) / feat_w  # 最终归一化 cx
+            cy = (ys + dy * 3 - 1.5) / feat_h  # 最终归一化 cy         
+            w = dw
+            h = dh
 
             pred_decoded = torch.stack([cx, cy, w, h], dim=1)
 
@@ -140,15 +133,20 @@ class CustomYOLOLoss(nn.Module):
                 continue
             M = gb.shape[0]
 
+            gt_cids = torch.tensor(gt_box_cls_indices[b]).to(device)
             # ===================== 逐张图计算损失 =====================
             pos_mask = torch.zeros(N, dtype=torch.bool, device=device)
             target_box = torch.zeros(N, 4, device=device)
             cls_target = torch.zeros(N, device=device)
             cls_score = torch.zeros(N, device=device)
             best_iou = torch.zeros(N, device=device)
+            best_mask = torch.zeros(N, dtype=torch.bool, device=device)
+
+            target_cls_idx = torch.zeros(N, dtype=torch.long, device=device)
 
             for m in range(M):
                 cx, cy, w, h = gb[m]
+                cid = gt_cids[m]
                 gx = cx * feat_w
                 gy = cy * feat_h
 
@@ -164,32 +162,44 @@ class CustomYOLOLoss(nn.Module):
                 if not candidate_mask.any():
                     continue
                 cand_idx = torch.where(candidate_mask)[0]
-
-                # TAL 选 Top13
+                
+                # 计算分数与IOU
                 cand_score = pc[cand_idx].sigmoid()
                 cand_box = pred_decoded[cand_idx]
                 _, iou_cand = self.bbox_iou_loss(
                     cand_box, gb[m].unsqueeze(0).expand(len(cand_idx), 4))
-                align_score = cand_score.pow(
-                    self.alpha) * iou_cand.pow(self.beta)
+                
+                # 只保留 iou_cand > best_iou 的
+                keep_compete = iou_cand > best_iou[cand_idx]
+                cand_idx = cand_idx[keep_compete]
+                iou_cand = iou_cand[keep_compete]
+                cand_score = cand_score[keep_compete]
 
+                if len(cand_idx) == 0:
+                    continue
+
+                # 算align_score
+                align_score = cand_score.pow(self.alpha) * iou_cand.pow(self.beta)
+
+                # TopK
                 gt_area = w * h
-                topk = int(4 + gt_area * 300)
-                topk = max(4, min(topk, 60))
+                topk = int(3 + gt_area * 300)
+                topk = max(3, min(topk, 30))
                 k = min(topk, len(align_score))
                 topk_val, topk_idx = torch.topk(align_score, k)
+
                 current_idx = cand_idx[topk_idx]
                 tmp_iou = iou_cand[topk_idx]
 
-                # 只保留 IoU 更大的GT
-                keep_mask = tmp_iou > best_iou[current_idx]
-                keep_idx = current_idx[keep_mask]
+                if len(current_idx) > 0:
+                    best_iou[current_idx] = tmp_iou
+                    pos_mask[current_idx] = True
+                    target_box[current_idx] = gb[m]
+                    target_cls_idx[current_idx] = cid
 
-                # 更新最佳GT
-                if len(keep_idx) > 0:
-                    best_iou[keep_idx] = tmp_iou[keep_mask]
-                    pos_mask[keep_idx] = True
-                    target_box[keep_idx] = gb[m]
+                    best_idx_in_current = torch.argmax(tmp_iou)
+                    best_single_pos = current_idx[best_idx_in_current]
+                    best_mask[best_single_pos] = True
 
             # ===================== 计算损失 =====================
             num_pos = pos_mask.sum().item()
@@ -199,12 +209,19 @@ class CustomYOLOLoss(nn.Module):
                 total_ciou += ciou.mean()
 
                 cls_score[pos_mask] = torch.clamp(iou.detach(), 0.0, 1.0)
+                
+                cls_target[pos_mask] = 0.8
+                cls_target[best_mask] = 1.0
 
-                cls_target[pos_mask] = 1.0
-                cls_target = cls_target * text_mask
 
                 cls = self.varifocal_loss(pc, cls_score, cls_target)
                 total_cls += cls
+
+                mul_cls_pred = cls_btm_flat[b][:, pos_mask].transpose(0, 1)
+                gt_label = target_cls_idx[pos_mask]
+                mul_cls_loss = self.ce_loss(mul_cls_pred, gt_label)
+                total_cls += mul_cls_loss
+
             else:
                 pass
 
