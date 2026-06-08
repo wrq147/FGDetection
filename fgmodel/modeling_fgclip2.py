@@ -969,7 +969,20 @@ class Fgclip2Model(Fgclip2PreTrainedModel):
 
         # Initialize weights and apply final processing
         self.post_init()
-
+    def get_text_pool_features(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.Tensor] = None,
+        walk_type: str = "long",
+    ) -> torch.FloatTensor:
+        text_outputs: BaseModelOutputWithPooling = self.text_model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            walk_type=walk_type,
+        )
+        return text_outputs.pooler_output
     @filter_out_non_signature_kwargs()
     @auto_docstring
     def get_text_features(
@@ -1234,6 +1247,21 @@ class Fgclip2Model(Fgclip2PreTrainedModel):
             text_model_output=text_outputs,
             vision_model_output=vision_outputs,
         )
+    def get_vision_feature(
+        self,
+        pixel_values: Optional[torch.FloatTensor] = None,
+        pixel_attention_mask: Optional[torch.Tensor] = None,
+        spatial_shapes: Optional[torch.LongTensor] = None,
+    ) -> torch.FloatTensor:
+ 
+        vision_outputs: BaseModelOutputWithPooling = self.vision_model(
+            pixel_values=pixel_values,
+            attention_mask=pixel_attention_mask,
+            spatial_shapes=spatial_shapes,
+        )
+
+        return vision_outputs.last_hidden_state
+    
     def get_vision_feature(
         self,
         pixel_values: Optional[torch.FloatTensor] = None,
