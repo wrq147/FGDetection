@@ -118,10 +118,9 @@ class CustomYOLOLoss(nn.Module):
             dw = torch.sigmoid(pb[:, 2])  # 宽度比例
             dh = torch.sigmoid(pb[:, 3])  # 高度比例
 
-
             # 网格坐标
             cx = (xs + dx * 3 - 1.5) / feat_w  # 最终归一化 cx
-            cy = (ys + dy * 3 - 1.5) / feat_h  # 最终归一化 cy         
+            cy = (ys + dy * 3 - 1.5) / feat_h  # 最终归一化 cy
             w = dw
             h = dh
 
@@ -140,8 +139,6 @@ class CustomYOLOLoss(nn.Module):
             cls_target = torch.zeros(N, device=device)
             cls_score = torch.zeros(N, device=device)
             best_iou = torch.zeros(N, device=device)
-            best_mask = torch.zeros(N, dtype=torch.bool, device=device)
-
             target_cls_idx = torch.zeros(N, dtype=torch.long, device=device)
 
             for m in range(M):
@@ -162,13 +159,13 @@ class CustomYOLOLoss(nn.Module):
                 if not candidate_mask.any():
                     continue
                 cand_idx = torch.where(candidate_mask)[0]
-                
+
                 # 计算分数与IOU
                 cand_score = pc[cand_idx].sigmoid()
                 cand_box = pred_decoded[cand_idx]
                 _, iou_cand = self.bbox_iou_loss(
                     cand_box, gb[m].unsqueeze(0).expand(len(cand_idx), 4))
-                
+
                 # 只保留 iou_cand > best_iou 的
                 keep_compete = iou_cand > best_iou[cand_idx]
                 cand_idx = cand_idx[keep_compete]
@@ -179,7 +176,8 @@ class CustomYOLOLoss(nn.Module):
                     continue
 
                 # 算align_score
-                align_score = cand_score.pow(self.alpha) * iou_cand.pow(self.beta)
+                align_score = cand_score.pow(
+                    self.alpha) * iou_cand.pow(self.beta)
 
                 # TopK
                 gt_area = w * h
@@ -197,9 +195,16 @@ class CustomYOLOLoss(nn.Module):
                     target_box[current_idx] = gb[m]
                     target_cls_idx[current_idx] = cid
 
-                    best_idx_in_current = torch.argmax(tmp_iou)
-                    best_single_pos = current_idx[best_idx_in_current]
-                    best_mask[best_single_pos] = True
+                    # 1. 对 tmp_iou 降序排序，得到排序索引
+                    sorted_iou_indices = torch.argsort(
+                        tmp_iou, descending=True)
+                    # 2. 按 IOU 排序后的位置生成排名
+                    ranks = torch.arange(
+                        len(sorted_iou_indices), device=device)
+                    # 3. 按排序顺序赋值：第1名=1.0，第2名=0.99，依次递减
+                    sorted_idx = current_idx[sorted_iou_indices]
+                    tkscale = 30.0/topk * 0.01
+                    cls_target[sorted_idx] = 1.0 - ranks * tkscale
 
             # ===================== 计算损失 =====================
             num_pos = pos_mask.sum().item()
@@ -209,10 +214,6 @@ class CustomYOLOLoss(nn.Module):
                 total_ciou += ciou.mean()
 
                 cls_score[pos_mask] = torch.clamp(iou.detach(), 0.0, 1.0)
-                
-                cls_target[pos_mask] = 0.8
-                cls_target[best_mask] = 1.0
-
 
                 cls = self.varifocal_loss(pc, cls_score, cls_target)
                 total_cls += cls
