@@ -76,24 +76,22 @@ class AdaptedDetectHead(nn.Module):
             (sim_max_max - sim_max_min + 1e-8)
         real_mm = confidence * sim_mean
         mask = real_mm.unsqueeze(-1)          # [B,784,1]
-        final_feat = fc_img_feat * mask  # [B, 784, 768]
-        final_feat = final_feat.permute(
+        cls_feat = fc_img_feat * mask  # [B, 784, 768]
+        cls_feat = cls_feat.permute(
             0, 2, 1).reshape(B, -1, featsize, featsize)
 
-        box = self.box_head(final_feat)  # [B,4,28,28]
+        box = self.box_head(cls_feat)  # [B,4,28,28]
         box = box.flatten(2)           # [B,4,784]
 
-        cls_map = self.cls_head(final_feat)
+        cls_map = self.cls_head(cls_feat)
         cls_map = cls_map.flatten(2)
 
         return box, cls_map, cls_btm
 
 
-
-
 # ===================== 全局配置 =====================
 device = "cuda" if torch.cuda.is_available() else "cpu"
-imgsize = 512
+imgsize = 640
 featuresize = imgsize // 16
 maxnumpatches = featuresize * featuresize
 # 中心点置信度阈值（按需调）
@@ -178,16 +176,16 @@ def inference_image(img_path, class_names, save_name="res.jpg"):
         box_tensor = pred_box[grid_idx]
         dx = torch.sigmoid(box_tensor[0])
         dy = torch.sigmoid(box_tensor[1])
-        bw = torch.sigmoid(box_tensor[2])
-        bh = torch.sigmoid(box_tensor[3])
-        w = bw
-        h = bh
+        bw = box_tensor[2]
+        bh = box_tensor[3]
+        w = torch.clamp(torch.exp(bw) * 0.2, 0.0, 1.0)
+        h = torch.clamp(torch.exp(bh) * 0.2, 0.0, 1.0)
 
         gy = grid_idx // featuresize
         gx = grid_idx % featuresize
 
-        cx = (gx + dx * 3 - 1.5)/featuresize
-        cy = (gy + dy * 3 - 1.5)/featuresize
+        cx = (gx + dx * 2 - 0.5)/featuresize
+        cy = (gy + dy * 2 - 0.5)/featuresize
 
         # 映射到 padded 图尺度
         cx_pad = cx * imgsize
@@ -272,4 +270,4 @@ if __name__ == "__main__":
     script_dir = os.path.dirname(os.path.abspath(__file__))
     test_img = os.path.join(script_dir, "car.png")
     inference_image(test_img, class_names=[
-                    "车牌"], save_name="detect_result_nms.jpg")
+                    "汽车"], save_name="detect_result_nms.jpg")
