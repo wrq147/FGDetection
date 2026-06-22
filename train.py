@@ -121,7 +121,7 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(model_file)
     image_processor = AutoImageProcessor.from_pretrained(model_file)
 
-    imgsize = 512  # 448
+    imgsize = 640  # 448
     featuresize = imgsize//16
     maxnumpatches = int(featuresize*featuresize)
     epochs = 50
