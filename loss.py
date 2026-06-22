@@ -12,12 +12,6 @@ class CustomYOLOLoss(nn.Module):
         self.focal_gamma = focal_gamma
         self.ce_loss = nn.CrossEntropyLoss()
 
-        gauss_kernel = torch.tensor([
-            [1.0, 2.0, 1.0],
-            [2.0, 4.0, 2.0],
-            [1.0, 2.0, 1.0]
-        ], dtype=torch.float32) / 16.0
-        self.register_buffer('gauss_kernel', gauss_kernel.view(1, 1, 3, 3))
 
     def bbox_iou_loss(self, pred_boxes, target_boxes, eps=1e-7):
         """
@@ -115,14 +109,14 @@ class CustomYOLOLoss(nn.Module):
 
             dx = torch.sigmoid(pb[:, 0])  # 中心点x偏移
             dy = torch.sigmoid(pb[:, 1])  # 中心点y偏移
-            dw = torch.sigmoid(pb[:, 2])  # 宽度比例
-            dh = torch.sigmoid(pb[:, 3])  # 高度比例
+            dw = pb[:, 2]  # 宽度比例
+            dh = pb[:, 3]  # 高度比例
 
             # 网格坐标
-            cx = (xs + dx * 3 - 1.5) / feat_w  # 最终归一化 cx
-            cy = (ys + dy * 3 - 1.5) / feat_h  # 最终归一化 cy
-            w = dw
-            h = dh
+            cx = (xs + dx * 2 - 0.5) / feat_w  # 最终归一化 cx
+            cy = (ys + dy * 2 - 0.5) / feat_h  # 最终归一化 cy
+            w = torch.clamp(torch.exp(dw) * 0.2, 0.0, 1.0) # 最终归一化 w
+            h = torch.clamp(torch.exp(dh) * 0.2, 0.0, 1.0) # 最终归一化 h
 
             pred_decoded = torch.stack([cx, cy, w, h], dim=1)
 
@@ -150,9 +144,9 @@ class CustomYOLOLoss(nn.Module):
                 gw = w * feat_w
                 gh = h * feat_h
                 radius_w = gw / 2
-                radius_w = min(2.5, radius_w)
+                radius_w = max(2.0, radius_w)
                 radius_h = gh / 2
-                radius_h = min(2.5, radius_h)
+                radius_h = max(2.0, radius_h)
                 # 先筛选中心候选区
                 candidate_mask = (torch.abs(xs - gx) <
                                   radius_w) & (torch.abs(ys - gy) < radius_h)
@@ -183,8 +177,8 @@ class CustomYOLOLoss(nn.Module):
 
                 # TopK
                 gt_area = w * h
-                topk = int(3 + gt_area * 300)
-                topk = max(3, min(topk, 30))
+                topk = int(4 + gt_area * 500)
+                topk = max(4, min(topk, 50))
                 k = min(topk, len(align_score))
                 topk_val, topk_idx = torch.topk(align_score, k)
 
@@ -205,7 +199,7 @@ class CustomYOLOLoss(nn.Module):
                         len(sorted_iou_indices), device=device)
                     # 3. 按排序顺序赋值：第1名=1.0，第2名=0.99，依次递减
                     sorted_idx = current_idx[sorted_iou_indices]
-                    tkscale = 30.0/topk * 0.01
+                    tkscale = 50.0/topk * 0.01988
                     cls_target[sorted_idx] = 1.0 - ranks * tkscale
 
             # ===================== 计算损失 =====================
