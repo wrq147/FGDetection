@@ -12,6 +12,55 @@ from loss import CustomYOLOLoss
 from dataset import YOLODataset
 from torch.utils.data import DataLoader
 from tqdm import tqdm  # 新增 tqdm
+import random
+from torch.utils.data import Sampler
+
+
+class MultiScaleBatchSampler(Sampler):
+    def __init__(
+        self, dataset, batch_size,
+        scale_candidates=None, shuffle=True, drop_last=False
+    ):
+        super().__init__(dataset)
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.drop_last = drop_last
+        # YOLO 标准多尺度池，必须是32整数倍
+        if scale_candidates is None:
+            self.scale_candidates = [512, 640, 768, 1024]
+        else:
+            self.scale_candidates = scale_candidates
+
+        self.indices = list(range(len(dataset)))
+
+    def __iter__(self):
+        indices = self.indices.copy()
+        if self.shuffle:
+            random.shuffle(indices)
+
+        batch = []
+        for idx in indices:
+            batch.append(idx)
+            # 凑满一个batch时：随机修改数据集input_size，再输出本批
+            if len(batch) == self.batch_size:
+                # 随机选输入尺寸
+                rand_size = random.choice(self.scale_candidates)
+                self.dataset.change_size(rand_size)
+                yield batch
+                batch = []
+        # 处理剩余不足一批的数据
+        if len(batch) > 0 and not self.drop_last:
+            rand_size = random.choice(self.scale_candidates)
+            self.dataset.change_size(rand_size)
+            yield batch
+
+    def __len__(self):
+        # 总批次数
+        if self.drop_last:
+            return len(self.dataset) // self.batch_size
+        else:
+            return (len(self.dataset) + self.batch_size - 1) // self.batch_size
 
 
 def load_partial_state_dict(model, pthfile, map_location='cpu'):
@@ -98,14 +147,14 @@ class AdaptedDetectHead(nn.Module):
             (sim_max_max - sim_max_min + 1e-8)
         real_mm = confidence * sim_mean
         mask = real_mm.unsqueeze(-1)          # [B,784,1]
-        final_feat = fc_img_feat * mask  # [B, 784, 768]
-        final_feat = final_feat.permute(
+        cls_feat = fc_img_feat * mask  # [B, 784, 768]
+        cls_feat = cls_feat.permute(
             0, 2, 1).reshape(B, -1, featsize, featsize)
 
-        box = self.box_head(final_feat)  # [B,4,28,28]
+        box = self.box_head(cls_feat)  # [B,4,28,28]
         box = box.flatten(2)           # [B,4,784]
 
-        cls_map = self.cls_head(final_feat)
+        cls_map = self.cls_head(cls_feat)
         cls_map = cls_map.flatten(2)
 
         return box, cls_map, cls_btm
@@ -121,9 +170,6 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(model_file)
     image_processor = AutoImageProcessor.from_pretrained(model_file)
 
-    imgsize = 640  # 448
-    featuresize = imgsize//16
-    maxnumpatches = int(featuresize*featuresize)
     epochs = 50
 
     dethead = AdaptedDetectHead().to(device)
@@ -132,19 +178,27 @@ if __name__ == "__main__":
         load_partial_state_dict(dethead, bestfile)
     criterion = CustomYOLOLoss()
 
-    optimizer = torch.optim.AdamW(dethead.parameters(), lr=1e-4, weight_decay=1e-4)
+    # for param in dethead.fc.parameters():
+    #     param.requires_grad = False
+    # for param in dethead.cls_head.parameters():
+    #     param.requires_grad = False
+    # for param in dethead.box_head.parameters():
+    #     param.requires_grad = False
+
+    optimizer = torch.optim.AdamW(
+        dethead.parameters(), lr=1e-5, weight_decay=1e-5)
     # optimizer = torch.optim.SGD(
-    #    dethead.parameters(), lr=1e-5, momentum=0.9)
+    #     dethead.parameters(), lr=1e-5, momentum=0.9)
 
     class_file = os.path.join(script_dir, "custom", "data.txt")
     custom_root = os.path.join(script_dir, "custom")
     train_dataset = YOLODataset(
         custom_root=custom_root, split="train", class_names_file=class_file,
-        device=device, input_size=imgsize
+        device=device
     )
     val_dataset = YOLODataset(
         custom_root=custom_root, split="val", class_names_file=class_file,
-        device=device, input_size=imgsize
+        device=device
     )
 
     # ====================== 文本特征缓存：加载 / 保存 ======================
@@ -170,9 +224,15 @@ if __name__ == "__main__":
         torch.save(text_feat_cache, cache_path)
         print(f"✅ 文本特征已保存到：{cache_path}")
     # ==================================================================================
-
+    train_batch_sampler = MultiScaleBatchSampler(
+        dataset=train_dataset,
+        batch_size=16,
+        scale_candidates=[512, 640, 768],
+        shuffle=True,
+        drop_last=False
+    )
     train_dataloader = DataLoader(
-        train_dataset, batch_size=16, shuffle=True, num_workers=0, collate_fn=lambda x: x)
+        train_dataset, batch_sampler=train_batch_sampler, num_workers=0, collate_fn=lambda x: x)
     val_dataloader = DataLoader(
         val_dataset, batch_size=16, shuffle=False, num_workers=0, collate_fn=lambda x: x)
 
@@ -190,6 +250,10 @@ if __name__ == "__main__":
             gt_boxes_batch = [x[1] for x in batch]
             gt_cls_names_list = [x[2] for x in batch]
             gt_box_cls_indices = [x[3] for x in batch]
+            featuresize_list = [x[4] for x in batch]
+
+            featuresize = featuresize_list[0]
+            maxnumpatches = int(featuresize*featuresize)
 
             B = len(images)
             optimizer.zero_grad()
@@ -237,6 +301,9 @@ if __name__ == "__main__":
                 gt_boxes_batch = [x[1] for x in batch]
                 gt_cls_names_list = [x[2] for x in batch]
                 gt_box_cls_indices = [x[3] for x in batch]
+                featuresize_list = [x[4] for x in batch]
+                featuresize = featuresize_list[0]
+                maxnumpatches = int(featuresize*featuresize)
 
                 B = len(images)
 

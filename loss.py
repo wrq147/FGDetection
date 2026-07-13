@@ -4,14 +4,11 @@ import torch.nn.functional as F
 
 
 class CustomYOLOLoss(nn.Module):
-    def __init__(self, alpha=0.25, beta=6.0, focal_alpha=0.25, focal_gamma=2.0):
+    def __init__(self, focal_alpha=0.25, focal_gamma=2.0):
         super().__init__()
-        self.alpha = alpha
-        self.beta = beta
         self.focal_alpha = focal_alpha
         self.focal_gamma = focal_gamma
         self.ce_loss = nn.CrossEntropyLoss()
-
 
     def bbox_iou_loss(self, pred_boxes, target_boxes, eps=1e-7):
         """
@@ -90,7 +87,7 @@ class CustomYOLOLoss(nn.Module):
         total_ciou = 0
         total_cls = 0
         num_valid = 0
-        # 生成网格坐标 (只生成一次)
+        # 生成网格坐标
         ys, xs = torch.meshgrid(
             torch.arange(feat_h, device=device),
             torch.arange(feat_w, device=device),
@@ -113,10 +110,10 @@ class CustomYOLOLoss(nn.Module):
             dh = pb[:, 3]  # 高度比例
 
             # 网格坐标
-            cx = (xs + dx * 2 - 0.5) / feat_w  # 最终归一化 cx
-            cy = (ys + dy * 2 - 0.5) / feat_h  # 最终归一化 cy
-            w = torch.clamp(torch.exp(dw) * 0.2, 0.0, 1.0) # 最终归一化 w
-            h = torch.clamp(torch.exp(dh) * 0.2, 0.0, 1.0) # 最终归一化 h
+            cx = xs_norm + dx  # 最终归一化 cx
+            cy = ys_norm + dy  # 最终归一化 cy
+            w = torch.clamp(torch.exp(dw) * 0.2, 1e-5, 1.0)  # 最终归一化 w
+            h = torch.clamp(torch.exp(dh) * 0.2, 1e-5, 1.0)  # 最终归一化 h
 
             pred_decoded = torch.stack([cx, cy, w, h], dim=1)
 
@@ -144,14 +141,11 @@ class CustomYOLOLoss(nn.Module):
                 gw = w * feat_w
                 gh = h * feat_h
                 radius_w = gw / 2
-                radius_w = max(2.0, radius_w)
                 radius_h = gh / 2
-                radius_h = max(2.0, radius_h)
                 # 先筛选中心候选区
                 candidate_mask = (torch.abs(xs - gx) <
                                   radius_w) & (torch.abs(ys - gy) < radius_h)
-                
-                
+
                 if not candidate_mask.any():
                     continue
                 cand_idx = torch.where(candidate_mask)[0]
@@ -172,35 +166,41 @@ class CustomYOLOLoss(nn.Module):
                     continue
 
                 # 算align_score
-                align_score = cand_score.pow(
-                    self.alpha) * iou_cand.pow(self.beta)
+                # gx_pix = gx * feat_w
+                # gy_pix = gy * feat_h
+                # cand_x = xs[cand_idx]
+                # cand_y = ys[cand_idx]
+                # dx = cand_x - gx_pix
+                # dy = cand_y - gy_pix
+                # dist = torch.sqrt(dx**2 + dy**2 + 1e-7)
+                # max_radius = torch.sqrt((gw/2)**2 + (gh/2)**2) + 1e-7
+                # dist_weight = torch.clamp(
+                #     1.0 - dist / max_radius, min=0.0, max=1.0)
+
+                img_cls_all = cls_btm_flat[b]
+                cand_cls_logits = img_cls_all[cid, cand_idx]
+                cls_sim_weight = torch.sigmoid(cand_cls_logits)
+                align_score = iou_cand * torch.sqrt(cls_sim_weight + 1e-7)
 
                 # TopK
                 gt_area = w * h
-                topk = int(4 + gt_area * 500)
-                topk = max(4, min(topk, 50))
+                topk = int(4 + gt_area * 400)
+                dynamic_max_k = int(8 * (N / 784))
+                dynamic_max_k = max(8, min(dynamic_max_k, 16))
+                topk = max(4, min(topk, dynamic_max_k))
                 k = min(topk, len(align_score))
                 topk_val, topk_idx = torch.topk(align_score, k)
 
                 current_idx = cand_idx[topk_idx]
                 tmp_iou = iou_cand[topk_idx]
+                fusion_label = torch.sqrt(tmp_iou + 1e-7)
 
                 if len(current_idx) > 0:
                     best_iou[current_idx] = tmp_iou
                     pos_mask[current_idx] = True
                     target_box[current_idx] = gb[m]
                     target_cls_idx[current_idx] = cid
-
-                    # 1. 对 tmp_iou 降序排序，得到排序索引
-                    sorted_iou_indices = torch.argsort(
-                        tmp_iou, descending=True)
-                    # 2. 按 IOU 排序后的位置生成排名
-                    ranks = torch.arange(
-                        len(sorted_iou_indices), device=device)
-                    # 3. 按排序顺序赋值：第1名=1.0，第2名=0.99，依次递减
-                    sorted_idx = current_idx[sorted_iou_indices]
-                    tkscale = 50.0/topk * 0.01988
-                    cls_target[sorted_idx] = 1.0 - ranks * tkscale
+                    cls_target[current_idx] = fusion_label.detach()
 
             # ===================== 计算损失 =====================
             num_pos = pos_mask.sum().item()
@@ -228,5 +228,5 @@ class CustomYOLOLoss(nn.Module):
         if num_valid == 0:
             return pred_box.sum() * 0.0
 
-        total_loss = (total_ciou * 5 + total_cls) / num_valid
+        total_loss = (total_ciou*5.0 + total_cls) / num_valid
         return total_loss

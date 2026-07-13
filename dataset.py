@@ -17,7 +17,7 @@ class YOLODataset(Dataset):
         └── val/
     """
 
-    def __init__(self, custom_root, split, class_names_file, device, input_size=448):
+    def __init__(self, custom_root, split, class_names_file, device):
         super().__init__()
         self.FIXED_BACKGROUND_CLASSES = [
             "空的", "未知的", "不知明的", "void_null_03", "void_null_04",
@@ -26,13 +26,12 @@ class YOLODataset(Dataset):
             "blank_fill_15", "blank_fill_16", "blank_fill_17", "blank_fill_18", "blank_fill_19",
             "empty_slot_20", "empty_slot_21", "empty_slot_22", "empty_slot_23", "empty_slot_24",
             "empty_slot_25", "empty_slot_26", "empty_slot_27", "无意义的词", "填充词",
-              "未知事物", "空的3", "空的2", "空4", "空5", "空6", "空7", "空8", "空9", "空10"
+            "未知事物", "空的3", "空的2", "空4", "空5", "空6", "空7", "空8", "空9", "空10"
         ]
         self.split = split
-        self.input_size = input_size
         self.device = device
-        self.featuresize = input_size // 16
         self.fixed_num_classes = 40
+        self.input_size = 512
 
         self.img_dir = os.path.join(custom_root, "images", split)
         self.label_dir = os.path.join(custom_root, "labels", split)
@@ -86,8 +85,8 @@ class YOLODataset(Dataset):
         return class_list
 
     # 计算缩放填充参数（不返回image，只返回参数）
-    def get_scale_params(self, w, h):
-        target_size = self.input_size
+    def get_scale_params(self, w, h, iptsize):
+        target_size = iptsize
         scale = target_size / max(w, h)
         new_w = int(w * scale)
         new_h = int(h * scale)
@@ -96,9 +95,9 @@ class YOLODataset(Dataset):
         return scale, paste_x, paste_y
 
     # 坐标修正（核心！返回已经对齐填充后的归一化坐标）
-    def correct_boxes(self, boxes, scale, paste_x, paste_y, img_w, img_h):
+    def correct_boxes(self, boxes, scale, paste_x, paste_y, img_w, img_h, iptsize):
         corrected = []
-        target = self.input_size
+        target = iptsize
         for box in boxes:
             cls_id, cxn, cyn, wn, hn = box
             # 原始坐标 → 缩放偏移后的新坐标
@@ -129,7 +128,12 @@ class YOLODataset(Dataset):
     def __len__(self):
         return len(self.img_files)
 
+    def change_size(self, input_size):
+        self.input_size = input_size
+
     def __getitem__(self, idx):
+        input_size = self.input_size
+        featuresize = input_size // 16
         # 1. 路径
         img_name = self.img_files[idx]
         img_path = os.path.join(self.img_dir, img_name)
@@ -139,7 +143,7 @@ class YOLODataset(Dataset):
             w, h = img.size
 
         # 3. 计算缩放参数
-        scale, paste_x, paste_y = self.get_scale_params(w, h)
+        scale, paste_x, paste_y = self.get_scale_params(w, h, input_size)
 
         # 4. 读取标签
         txt_name = os.path.splitext(img_name)[0] + ".txt"
@@ -194,11 +198,11 @@ class YOLODataset(Dataset):
         # 5. 修正框坐标
         if raw_boxes:
             boxes = self.correct_boxes(
-                raw_boxes, scale, paste_x, paste_y, w, h)
+                raw_boxes, scale, paste_x, paste_y, w, h, input_size)
         else:
             boxes = []
 
         img = self.resize_and_pad(Image.open(img_path).convert(
-            "RGB"), target_size=self.input_size)
+            "RGB"), target_size=input_size)
 
-        return img, boxes, final_unique_names, box_cls_indices
+        return img, boxes, final_unique_names, box_cls_indices, featuresize

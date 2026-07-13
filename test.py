@@ -10,7 +10,6 @@ from transformers import AutoImageProcessor, AutoTokenizer, AutoModelForCausalLM
 # 同目录下你的模型与损失、数据集
 from dataset import YOLODataset
 
-
 import matplotlib
 matplotlib.use('Agg')
 
@@ -80,6 +79,7 @@ class AdaptedDetectHead(nn.Module):
         cls_feat = cls_feat.permute(
             0, 2, 1).reshape(B, -1, featsize, featsize)
 
+
         box = self.box_head(cls_feat)  # [B,4,28,28]
         box = box.flatten(2)           # [B,4,784]
 
@@ -88,14 +88,12 @@ class AdaptedDetectHead(nn.Module):
 
         return box, cls_map, cls_btm
 
-
-# ===================== 全局配置 =====================
+# ===================== 全局配置(多尺度修改) =====================
 device = "cuda" if torch.cuda.is_available() else "cpu"
-imgsize = 640
-featuresize = imgsize // 16
-maxnumpatches = featuresize * featuresize
+# 多尺度列表
+img_sizes = [512, 640, 768]
 # 中心点置信度阈值（按需调）
-CENTER_THRESH = 0.6
+CENTER_THRESH = 0.5
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 model_file = os.path.join(script_dir, "fgmodel")
@@ -113,7 +111,7 @@ dethead.load_state_dict(torch.load(
 
 
 # ===================== 预处理函数（和训练完全一致） =====================
-def resize_and_pad(image, target_size=448, fill_color=(114, 114, 114)):
+def resize_and_pad(image, target_size, fill_color=(114, 114, 114)):
     w, h = image.size
     scale = target_size / max(w, h)
     new_w = int(w * scale)
@@ -125,13 +123,16 @@ def resize_and_pad(image, target_size=448, fill_color=(114, 114, 114)):
     padded_img.paste(image, (paste_x, paste_y))
     return padded_img, paste_x, paste_y, scale
 
-# ===================== 推理+可视化 核心函数【无NMS】 =====================
 
-
-def inference_image(img_path, class_names, save_name="res.jpg"):
-    raw_img = Image.open(img_path).convert("RGB")
-    pad_img, pad_x, pad_y, scale = resize_and_pad(raw_img, imgsize)
+def single_scale_predict(raw_img, target_size, class_names):
+    """
+    单尺度推理，返回该尺度下所有过滤后的预测框列表
+    """
     raw_w, raw_h = raw_img.size
+    featuresize = target_size // 16
+    maxnumpatches = featuresize * featuresize
+
+    pad_img, pad_x, pad_y, scale = resize_and_pad(raw_img, target_size)
     # 图像前向
     image_input = image_processor(
         images=pad_img,
@@ -149,9 +150,7 @@ def inference_image(img_path, class_names, save_name="res.jpg"):
     ).to(device)
 
     with torch.no_grad():
-        last_hidden = fgmodel.get_vision_feature(
-            **image_input)
-
+        last_hidden = fgmodel.get_vision_feature(**image_input)
         text_feat = fgmodel.get_text_features(**text_tokens, walk_type="long")
         text_feat = text_feat.unsqueeze(0)
         # 检测头前向
@@ -165,11 +164,10 @@ def inference_image(img_path, class_names, save_name="res.jpg"):
         pred_score = torch.sigmoid(pred_cls_score)  # 类别置信度
 
     # 遍历所有特征点，仅用 中心阈值过滤
-    results = []
+    scale_results = []
     total_grid = featuresize * featuresize
     for grid_idx in range(total_grid):
         c_score = pred_score[grid_idx].item()
-
         if c_score < CENTER_THRESH:
             continue
 
@@ -184,14 +182,14 @@ def inference_image(img_path, class_names, save_name="res.jpg"):
         gy = grid_idx // featuresize
         gx = grid_idx % featuresize
 
-        cx = (gx + dx * 2 - 0.5)/featuresize
-        cy = (gy + dy * 2 - 0.5)/featuresize
+        cx = gx/featuresize + dx
+        cy = gy/featuresize + dy
 
         # 映射到 padded 图尺度
-        cx_pad = cx * imgsize
-        cy_pad = cy * imgsize
-        bw_pad = w * imgsize
-        bh_pad = h * imgsize
+        cx_pad = cx * target_size
+        cy_pad = cy * target_size
+        bw_pad = w * target_size
+        bh_pad = h * target_size
 
         # 去除padding偏移
         cx_raw = cx_pad - pad_x
@@ -215,39 +213,44 @@ def inference_image(img_path, class_names, save_name="res.jpg"):
         y2 = max(0.0, min(y2, raw_h))
         # 类别
         cls_idx = pred_cls_idx[grid_idx]
-        results.append({
+        scale_results.append({
             "box": [x1, y1, x2, y2],
             "score": c_score,
             "cls_idx": cls_idx.item()
         })
+    return scale_results
 
-    # ===================== 绘图保存 =====================
-    if len(results) == 0:
-        print("无目标")
+
+# ===================== 多尺度融合推理+可视化 核心函数 =====================
+def inference_image_multi_scale(img_path, class_names, save_name="res.jpg"):
+    raw_img = Image.open(img_path).convert("RGB")
+    all_results = []
+    # 遍历全部尺度推理，收集所有预测框
+    for sz in img_sizes:
+        print(f"正在推理尺度 {sz} ...")
+        single_res = single_scale_predict(raw_img, sz, class_names)
+        all_results.extend(single_res)
+        print(f"尺度 {sz} 检测到 {len(single_res)} 个候选框")
+
+    if len(all_results) == 0:
+        print("所有尺度均无目标")
         return
 
-    # 转成 NMS 需要的张量
-    boxes = torch.tensor([r["box"] for r in results],
-                         dtype=torch.float32).to(device)
-    scores = torch.tensor([r["score"] for r in results],
-                          dtype=torch.float32).to(device)
-
-    # 执行 NMS
+    # 汇总全部尺度结果统一执行NMS
+    boxes = torch.tensor([r["box"] for r in all_results], dtype=torch.float32).to(device)
+    scores = torch.tensor([r["score"] for r in all_results], dtype=torch.float32).to(device)
     keep_idx = nms(boxes[:, :4], scores, iou_threshold=0.2)
     keep_idx = keep_idx.cpu().numpy()
+    results_nms = [all_results[i] for i in keep_idx]
 
-    # 只保留 NMS 后的结果
-    results_nms = [results[i] for i in keep_idx]
-
+    # 绘图保存
     fig, ax = plt.subplots(figsize=(12, 12))
     ax.imshow(raw_img)
     ax.axis("off")
-
     for res in results_nms:
         x1, y1, x2, y2 = res["box"]
         cls_name = class_names[res["cls_idx"]]
         score = res["score"]
-
         rect = patches.Rectangle(
             (x1, y1), x2-x1, y2-y1,
             linewidth=2, edgecolor="#ff3333", facecolor="none"
@@ -258,16 +261,15 @@ def inference_image(img_path, class_names, save_name="res.jpg"):
             color="white", fontsize=10,
             bbox=dict(boxstyle="round,pad=0.3", fc="red", alpha=0.6)
         )
-
     plt.tight_layout()
     plt.savefig(save_name, dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"推理完成，共检测 {len(results_nms)} 个目标，结果保存至: {save_name}")
+    print(f"多尺度融合推理完成，总候选框:{len(all_results)}, NMS后保留 {len(results_nms)} 个目标，结果保存至: {save_name}")
 
 
 if __name__ == "__main__":
     # 替换为你的测试图片路径
     script_dir = os.path.dirname(os.path.abspath(__file__))
     test_img = os.path.join(script_dir, "car.png")
-    inference_image(test_img, class_names=[
-                    "汽车"], save_name="detect_result_nms.jpg")
+    # 调用多尺度推理函数
+    inference_image_multi_scale(test_img, class_names=["汽车"], save_name="detect_multi_scale_nms.jpg")
