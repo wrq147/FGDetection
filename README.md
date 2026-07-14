@@ -45,7 +45,7 @@ custom/
 
 2. 配置数据集路径：在主脚本同级目录创建custom目录，将数据集按目录结构放入。
 
-3. 训练分为两阶段训练，第一阶段用loss1.py，第二阶段用loss2.py。运行主脚本：
+3. 运行训练脚本
 
 ```bash
 python train.py
@@ -65,7 +65,7 @@ python test.py
 
 ### 1\. 模型结构
 
-- **AdaptedDetectHead**：自定义检测头，包含 box\_head（边界框回归）和 cls\_head（类别预测）双分支，通过图文相似度计算生成特征掩码，优化特征提取。
+- **AdaptedDetectHead**：自定义检测头，包含 box_head（边界框回归）和 cls_head（类别预测）双分支，通过图文相似度计算生成特征掩码，优化特征提取。
 
 - **CustomYOLOLoss**：自定义损失函数，融合 CIoU 损失（边界框回归）和 Varifocal 损失（类别预测），适配开放词汇检测场景。
 
