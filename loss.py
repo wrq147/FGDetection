@@ -166,16 +166,6 @@ class CustomYOLOLoss(nn.Module):
                     continue
 
                 # 算align_score
-                # gx_pix = gx * feat_w
-                # gy_pix = gy * feat_h
-                # cand_x = xs[cand_idx]
-                # cand_y = ys[cand_idx]
-                # dx = cand_x - gx_pix
-                # dy = cand_y - gy_pix
-                # dist = torch.sqrt(dx**2 + dy**2 + 1e-7)
-                # max_radius = torch.sqrt((gw/2)**2 + (gh/2)**2) + 1e-7
-                # dist_weight = torch.clamp(
-                #     1.0 - dist / max_radius, min=0.0, max=1.0)
 
                 img_cls_all = cls_btm_flat[b]
                 cand_cls_logits = img_cls_all[cid, cand_idx]
