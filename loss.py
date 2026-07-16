@@ -140,10 +140,10 @@ class CustomYOLOLoss(nn.Module):
 
                 gw = w * feat_w
                 gh = h * feat_h
-                radius_w = gw / 2+0.3
+                radius_w = gw / 2+0.6
                 radius_w = max(2.2, radius_w)
-                radius_h = gh / 2+0.3
-                radius_h = max(2.2, radius_h)
+                radius_h = gh / 2+0.6
+                radius_h = max(2.1, radius_h)
                 # 先筛选中心候选区
                 candidate_mask = (torch.abs(xs - gx) <
                                   radius_w) & (torch.abs(ys - gy) < radius_h)
