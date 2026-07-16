@@ -141,7 +141,7 @@ class CustomYOLOLoss(nn.Module):
                 gw = w * feat_w
                 gh = h * feat_h
                 radius_w = gw / 2+0.6
-                radius_w = max(2.2, radius_w)
+                radius_w = max(2.1, radius_w)
                 radius_h = gh / 2+0.6
                 radius_h = max(2.1, radius_h)
                 # 先筛选中心候选区
