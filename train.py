@@ -178,17 +178,8 @@ if __name__ == "__main__":
         load_partial_state_dict(dethead, bestfile)
     criterion = CustomYOLOLoss()
 
-    # for param in dethead.fc.parameters():
-    #     param.requires_grad = False
-    # for param in dethead.cls_head.parameters():
-    #     param.requires_grad = False
-    # for param in dethead.box_head.parameters():
-    #     param.requires_grad = False
-
     optimizer = torch.optim.AdamW(
-        dethead.parameters(), lr=1e-5, weight_decay=1e-5)
-    # optimizer = torch.optim.SGD(
-    #     dethead.parameters(), lr=1e-5, momentum=0.9)
+        dethead.parameters(), lr=1e-4, weight_decay=1e-5)
 
     class_file = os.path.join(script_dir, "custom", "data.txt")
     custom_root = os.path.join(script_dir, "custom")
