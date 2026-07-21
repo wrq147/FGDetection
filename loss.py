@@ -97,9 +97,7 @@ class CustomYOLOLoss(nn.Module):
         ys = ys.reshape(-1).float()
         xs_norm = xs / feat_w
         ys_norm = ys / feat_h
-
         cls_btm_flat = cls_btm.flatten(2)
-
         for b in range(B):
             pb = pred_box[b].permute(1, 0)          # [N,4]
             pc = pred_cls[b].squeeze(0)          # [N]
@@ -112,6 +110,7 @@ class CustomYOLOLoss(nn.Module):
             # 网格坐标
             cx = xs_norm + dx  # 最终归一化 cx
             cy = ys_norm + dy  # 最终归一化 cy
+
             w = torch.clamp(torch.exp(dw) * 0.2, 1e-5, 1.0)  # 最终归一化 w
             h = torch.clamp(torch.exp(dh) * 0.2, 1e-5, 1.0)  # 最终归一化 h
 
@@ -140,10 +139,10 @@ class CustomYOLOLoss(nn.Module):
 
                 gw = w * feat_w
                 gh = h * feat_h
-                radius_w = gw / 2+0.3
-                radius_w = max(2.5, radius_w)
-                radius_h = gh / 2+0.3
-                radius_h = max(2.5, radius_h)
+                radius_w = gw / 2+0.5
+                radius_w = max(2.0, radius_w)
+                radius_h = gh / 2+0.5
+                radius_h = max(2.0, radius_h)
                 # 先筛选中心候选区
                 candidate_mask = (torch.abs(xs - gx) <
                                   radius_w) & (torch.abs(ys - gy) < radius_h)
@@ -168,23 +167,23 @@ class CustomYOLOLoss(nn.Module):
                     continue
 
                 # 算align_score
-
                 img_cls_all = cls_btm_flat[b]
                 cand_cls_logits = img_cls_all[cid, cand_idx]
                 cls_sim_weight = torch.sigmoid(cand_cls_logits)
-                align_score = iou_cand * torch.sqrt(cls_sim_weight + 1e-7)
+                align_score = torch.pow(iou_cand + 1e-7, 1.5) * torch.sqrt(cls_sim_weight + 1e-7)
 
                 # TopK
                 gt_area = w * h
-                topk = int(4 + gt_area * 400)
-                dynamic_max_k = int(8 * (N / 784))
-                dynamic_max_k = max(6, min(dynamic_max_k, 16))
-                topk = max(4, min(topk, dynamic_max_k))
+                topk = int(3 + gt_area * 500)
+                max_k = min(12, max(4, int(N / 64)))
+                topk = min(topk, max_k, len(align_score))
                 k = min(topk, len(align_score))
                 topk_val, topk_idx = torch.topk(align_score, k)
 
                 current_idx = cand_idx[topk_idx]
                 tmp_iou = iou_cand[topk_idx]
+
+
                 fusion_label = torch.sqrt(tmp_iou + 1e-7)
 
                 if len(current_idx) > 0:
@@ -220,5 +219,5 @@ class CustomYOLOLoss(nn.Module):
         if num_valid == 0:
             return pred_box.sum() * 0.0
 
-        total_loss = (total_ciou*5.0 + total_cls) / num_valid
+        total_loss = (total_ciou*5.0 + total_cls*0.9) / num_valid
         return total_loss
