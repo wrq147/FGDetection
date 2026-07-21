@@ -76,4 +76,14 @@ python test.py
 - **图文特征对齐**：通过矩阵乘法计算图像特征与文本特征的相似度，生成特征掩码，强化目标区域特征。
 
 
+## 预览图片
+
+识别文本”左边的猫“
+<img width="1785" height="1346" alt="img2" src="https://github.com/user-attachments/assets/6a3486ee-d493-41a7-9f8e-86d4ba639106" />
+
+识别文本”书“
+<img width="1785" height="1346" alt="img1" src="https://github.com/user-attachments/assets/ddda2d0e-6138-4ac5-a1a8-a71f960b9f8b" />
+
+识别文本”狗“
+<img width="1785" height="1198" alt="img3" src="https://github.com/user-attachments/assets/638c5d9c-e16b-438b-9ec4-7823817ef23a" />
 
