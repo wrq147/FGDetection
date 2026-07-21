@@ -219,5 +219,5 @@ class CustomYOLOLoss(nn.Module):
         if num_valid == 0:
             return pred_box.sum() * 0.0
 
-        total_loss = (total_ciou*5.0 + total_cls*0.9) / num_valid
+        total_loss = (total_ciou*4.0 + total_cls) / num_valid
         return total_loss
