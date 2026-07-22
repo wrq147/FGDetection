@@ -98,6 +98,7 @@ class CustomYOLOLoss(nn.Module):
         xs_norm = xs / feat_w
         ys_norm = ys / feat_h
         cls_btm_flat = cls_btm.flatten(2)
+        
         for b in range(B):
             pb = pred_box[b].permute(1, 0)          # [N,4]
             pc = pred_cls[b].squeeze(0)          # [N]
@@ -170,7 +171,7 @@ class CustomYOLOLoss(nn.Module):
                 img_cls_all = cls_btm_flat[b]
                 cand_cls_logits = img_cls_all[cid, cand_idx]
                 cls_sim_weight = torch.sigmoid(cand_cls_logits)
-                align_score = torch.pow(iou_cand + 1e-7, 1.5) * torch.sqrt(cls_sim_weight + 1e-7)
+                align_score = iou_cand * torch.sqrt(cls_sim_weight + 1e-7)
 
                 # TopK
                 gt_area = w * h
@@ -184,7 +185,7 @@ class CustomYOLOLoss(nn.Module):
                 tmp_iou = iou_cand[topk_idx]
 
 
-                fusion_label = torch.sqrt(tmp_iou + 1e-7)
+                fusion_label = (torch.sqrt(tmp_iou + 1e-7) + 0.1) / 1.1
 
                 if len(current_idx) > 0:
                     best_iou[current_idx] = tmp_iou
@@ -219,5 +220,5 @@ class CustomYOLOLoss(nn.Module):
         if num_valid == 0:
             return pred_box.sum() * 0.0
 
-        total_loss = (total_ciou*4.0 + total_cls) / num_valid
+        total_loss = (total_ciou*5.0 + total_cls) / num_valid
         return total_loss
