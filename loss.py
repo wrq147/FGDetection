@@ -185,7 +185,7 @@ class CustomYOLOLoss(nn.Module):
                 tmp_iou = iou_cand[topk_idx]
 
 
-                fusion_label = (torch.sqrt(tmp_iou + 1e-7) + 0.1) / 1.1
+                fusion_label = torch.sqrt(tmp_iou + 1e-7)
 
                 if len(current_idx) > 0:
                     best_iou[current_idx] = tmp_iou
