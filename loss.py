@@ -153,7 +153,6 @@ class CustomYOLOLoss(nn.Module):
                 cand_idx = torch.where(candidate_mask)[0]
 
                 # 计算分数与IOU
-                cand_score = pc[cand_idx].sigmoid()
                 cand_box = pred_decoded[cand_idx]
                 _, iou_cand = self.bbox_iou_loss(
                     cand_box, gb[m].unsqueeze(0).expand(len(cand_idx), 4))
@@ -162,7 +161,6 @@ class CustomYOLOLoss(nn.Module):
                 keep_compete = iou_cand > best_iou[cand_idx]
                 cand_idx = cand_idx[keep_compete]
                 iou_cand = iou_cand[keep_compete]
-                cand_score = cand_score[keep_compete]
 
                 if len(cand_idx) == 0:
                     continue
