@@ -79,10 +79,12 @@ python test.py
 ## 预览图片
 
 识别文本”左边的猫“
-<img width="1785" height="1346" alt="img2" src="https://github.com/user-attachments/assets/6a3486ee-d493-41a7-9f8e-86d4ba639106" />
+<img width="1785" height="1346" alt="1" src="https://github.com/user-attachments/assets/d6cbf637-cc42-4f61-8975-3162c59f8c49" />
+
 
 识别文本”书“
-<img width="1785" height="1346" alt="img1" src="https://github.com/user-attachments/assets/ddda2d0e-6138-4ac5-a1a8-a71f960b9f8b" />
+<img width="1785" height="1346" alt="2" src="https://github.com/user-attachments/assets/e8f2f3d6-4df3-4734-a449-d6ed972aacdb" />
+
 
 识别文本”狗“
 <img width="1785" height="1198" alt="img3" src="https://github.com/user-attachments/assets/638c5d9c-e16b-438b-9ec4-7823817ef23a" />
