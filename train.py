@@ -147,14 +147,15 @@ class AdaptedDetectHead(nn.Module):
             (sim_max_max - sim_max_min + 1e-8)
         real_mm = confidence * sim_mean
         mask = real_mm.unsqueeze(-1)          # [B,784,1]
-        cls_feat = fc_img_feat * mask  # [B, 784, 768]
-        cls_feat = cls_feat.permute(
+
+        mask_feat = fc_img_feat * mask  # [B, 784, 768]
+        cls_feat = mask_feat.permute(
             0, 2, 1).reshape(B, -1, featsize, featsize)
 
-        box_feat = fc_img_feat * mask+fc_img_feat
-        box_feat=box_feat.permute(
+        box_feat = mask_feat+fc_img_feat
+        box_feat = box_feat.permute(
             0, 2, 1).reshape(B, -1, featsize, featsize)
-        
+
         box = self.box_head(box_feat)  # [B,4,28,28]
         box = box.flatten(2)           # [B,4,784]
 
