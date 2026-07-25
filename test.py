@@ -91,7 +91,7 @@ class AdaptedDetectHead(nn.Module):
 # ===================== 全局配置(多尺度修改) =====================
 device = "cuda" if torch.cuda.is_available() else "cpu"
 # 多尺度列表
-img_sizes = [512, 640, 768]
+img_sizes = [512, 768]
 # 中心点置信度阈值（按需调）
 CENTER_THRESH = 0.5
 
