@@ -151,7 +151,11 @@ class AdaptedDetectHead(nn.Module):
         cls_feat = cls_feat.permute(
             0, 2, 1).reshape(B, -1, featsize, featsize)
 
-        box = self.box_head(cls_feat)  # [B,4,28,28]
+        box_feat = fc_img_feat * mask+fc_img_feat
+        box_feat=box_feat.permute(
+            0, 2, 1).reshape(B, -1, featsize, featsize)
+        
+        box = self.box_head(box_feat)  # [B,4,28,28]
         box = box.flatten(2)           # [B,4,784]
 
         cls_map = self.cls_head(cls_feat)
