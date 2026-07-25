@@ -222,7 +222,7 @@ if __name__ == "__main__":
     train_batch_sampler = MultiScaleBatchSampler(
         dataset=train_dataset,
         batch_size=16,
-        scale_candidates=[512, 640, 768],
+        scale_candidates=[512, 768],
         shuffle=True,
         drop_last=False
     )
