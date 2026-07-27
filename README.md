@@ -9,7 +9,10 @@ https://github.com/360CVGroup/FG-CLIP
 
 ### 基础环境
 
-Python 3\.8\+、PyTorch 1\.10\+、CUDA 11\.3\+（建议 GPU 训练，CPU 可运行但速度较慢）
+numpy>=2.0.2
+torch>=2.6.0
+torchvision>=0.21.0
+transformers==4.55.2
 
 ### 依赖安装
 
