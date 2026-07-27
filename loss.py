@@ -8,7 +8,7 @@ class CustomYOLOLoss(nn.Module):
         super().__init__()
         self.focal_alpha = focal_alpha
         self.focal_gamma = focal_gamma
-        self.ce_loss = nn.CrossEntropyLoss()
+
 
     def bbox_iou_loss(self, pred_boxes, target_boxes, eps=1e-7):
         """
@@ -206,7 +206,12 @@ class CustomYOLOLoss(nn.Module):
 
                 mul_cls_pred = cls_btm_flat[b][:, pos_mask].transpose(0, 1)
                 gt_label = target_cls_idx[pos_mask]
-                mul_cls_loss = self.ce_loss(mul_cls_pred, gt_label)
+                
+                sample_weight = torch.clamp(iou.detach(), min=0.2, max=1.0)
+                log_probs = F.log_softmax(mul_cls_pred, dim=-1)
+                nll_per_sample = F.nll_loss(log_probs, gt_label, reduction="none")
+                weighted_nll = nll_per_sample * sample_weight
+                mul_cls_loss = weighted_nll.mean()
                 total_cls += mul_cls_loss
 
             else:
