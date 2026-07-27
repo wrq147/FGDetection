@@ -207,7 +207,9 @@ class CustomYOLOLoss(nn.Module):
                 mul_cls_pred = cls_btm_flat[b][:, pos_mask].transpose(0, 1)
                 gt_label = target_cls_idx[pos_mask]
 
-                sample_weight = cls_score[pos_mask]
+                sample_weight = cls_target[pos_mask].detach()
+                # 可选增加上下限约束，防止极端值
+                sample_weight = torch.clamp(sample_weight, min=0.2, max=1.0)
                 log_probs = F.log_softmax(mul_cls_pred, dim=-1)
                 nll_per_sample = F.nll_loss(log_probs, gt_label, reduction="none")
                 weighted_nll = nll_per_sample * sample_weight
