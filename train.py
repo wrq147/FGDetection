@@ -172,7 +172,7 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(model_file)
     image_processor = AutoImageProcessor.from_pretrained(model_file)
 
-    epochs = 20
+    epochs = 30
 
     dethead = AdaptedDetectHead().to(device)
     bestfile = 'dethead_yolo_best.pth'
