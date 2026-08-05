@@ -44,7 +44,7 @@ custom/
 
 ### 训练步骤
 
-1. 从 **FG-CLIP** 项目获取预训练多模态模型（fgmodel），放入主脚本同级fgmodel名称的目录。modeling_fgclip2.py文件不要替换。
+1. 从 **FG-CLIP** 项目获取预训练多模态模型（fgmodel），放入主脚本同级fgmodel名称的目录。
 
 2. 配置数据集路径：在主脚本同级目录创建custom目录，将数据集按目录结构放入。
 
