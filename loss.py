@@ -8,6 +8,7 @@ class CustomYOLOLoss(nn.Module):
         super().__init__()
         self.focal_alpha = focal_alpha
         self.focal_gamma = focal_gamma
+        self.ce_loss = nn.CrossEntropyLoss()
 
 
     def bbox_iou_loss(self, pred_boxes, target_boxes, eps=1e-7):
@@ -84,8 +85,8 @@ class CustomYOLOLoss(nn.Module):
         N = feat_w * feat_h
         B = pred_box.shape[0]
 
-        total_ciou = 0
-        total_cls = 0
+        total_ciou = torch.tensor(0.0, device=device, dtype=pred_box.dtype)
+        total_cls = torch.tensor(0.0, device=device, dtype=pred_box.dtype)
         num_valid = 0
         # 生成网格坐标
         ys, xs = torch.meshgrid(
@@ -206,16 +207,10 @@ class CustomYOLOLoss(nn.Module):
 
                 mul_cls_pred = cls_btm_flat[b][:, pos_mask].transpose(0, 1)
                 gt_label = target_cls_idx[pos_mask]
-
-                sample_weight = cls_target[pos_mask].detach()
-                # 可选增加上下限约束，防止极端值
-                sample_weight = torch.clamp(sample_weight, min=0.2, max=1.0)
-                log_probs = F.log_softmax(mul_cls_pred, dim=-1)
-                nll_per_sample = F.nll_loss(log_probs, gt_label, reduction="none")
-                weighted_nll = nll_per_sample * sample_weight
-                mul_cls_loss = weighted_nll.mean()
+                mul_cls_loss = self.ce_loss(mul_cls_pred, gt_label)
                 total_cls += mul_cls_loss
-
+ 
+ 
             else:
                 pass
 
