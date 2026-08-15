@@ -25,7 +25,7 @@ pip install torch torchvision pillow transformers tqdm
 
 ### 数据集结构
 
-建议使用数据集LVIS。
+建议使用数据集LVIS+Flickr30k+GQA。
 
 采用自定义 YOLO 格式数据集，目录结构如下：
 
