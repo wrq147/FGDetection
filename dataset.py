@@ -3,7 +3,7 @@ import random
 import torch
 from torch.utils.data import Dataset
 from PIL import Image
-
+from torchvision.transforms import ToTensor, ColorJitter
 
 class YOLODataset(Dataset):
     """
@@ -17,7 +17,7 @@ class YOLODataset(Dataset):
         └── val/
     """
 
-    def __init__(self, custom_root, split, class_names_file, device):
+    def __init__(self, custom_root, split, class_names_file):
         super().__init__()
         self.FIXED_BACKGROUND_CLASSES = [
             "空的", "未知的", "不知明的", "void_null_03", "void_null_04",
@@ -28,11 +28,17 @@ class YOLODataset(Dataset):
             "empty_slot_25", "empty_slot_26", "empty_slot_27", "无意义的词", "填充词",
             "未知事物", "空的3", "空的2", "空4", "空5", "空6", "空7", "空8", "空9", "空10"
         ]
+        self.direction_keywords = {"左", "右", "left", "right"}
         self.split = split
-        self.device = device
         self.fixed_num_classes = 40
-        self.input_size = 512
-
+        self.input_size = 640
+        self.to_tensor = ToTensor()
+        self.color_jitter = ColorJitter(
+            brightness=0.15,   # 明暗变化，允许
+            contrast=0.15,     # 对比度变化，允许
+            saturation=0.0,    # 关闭饱和度，颜色浓淡不变
+            hue=0.0             # 关闭色相，色调完全不变
+        )
         self.img_dir = os.path.join(custom_root, "images", split)
         self.label_dir = os.path.join(custom_root, "labels", split)
 
@@ -113,7 +119,7 @@ class YOLODataset(Dataset):
             corrected.append([cxn_new, cyn_new, wn_new, hn_new])
         return corrected
 
-    def resize_and_pad(self, image, target_size=448, fill_color=(114, 114, 114)):
+    def resize_and_pad(self, image, target_size, fill_color=(114, 114, 114)):
         w, h = image.size
         scale = target_size / max(w, h)
         new_w = int(w * scale)
@@ -204,5 +210,25 @@ class YOLODataset(Dataset):
 
         img = self.resize_and_pad(Image.open(img_path).convert(
             "RGB"), target_size=input_size)
+        
+        if self.split == "train":
+            img = self.color_jitter(img)
+            has_dir_word = False
 
-        return img, boxes, final_unique_names, box_cls_indices, featuresize
+            for name in real_unique_names:
+                for k in self.direction_keywords:
+                    if k in name:
+                        has_dir_word = True
+                        break
+                if has_dir_word:
+                    break
+                    
+            if (not has_dir_word) and random.random() < 0.5:
+                img = img.transpose(Image.FLIP_LEFT_RIGHT)
+                # 修正所有box的cx归一化坐标
+                for box in boxes:
+                    # box:[cxn, cyn, wn, hn]
+                    box[0] = 1.0 - box[0]
+                    
+        img_tensor = self.to_tensor(img)
+        return img_tensor, boxes, final_unique_names, box_cls_indices, featuresize
