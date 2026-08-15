@@ -72,6 +72,8 @@ python test.py
 
 - **CustomYOLOLoss**：自定义损失函数，融合 CIoU 损失（边界框回归）和 Varifocal 损失（类别预测），适配开放词汇检测场景。
 
+- **CustomVisionBackbone**：自定义视觉编码的主干网络，融合轻量FPN和MobileViT。
+
 ### 2\. 关键功能
 
 - **文本特征缓存**：首次运行计算所有类别文本特征并缓存，避免重复计算，提升效率。
