@@ -10,7 +10,6 @@ class CustomYOLOLoss(nn.Module):
         self.focal_gamma = focal_gamma
         self.ce_loss = nn.CrossEntropyLoss()
 
-
     def bbox_iou_loss(self, pred_boxes, target_boxes, eps=1e-7):
         """
         计算 CIoU 损失（比普通 IoU 效果好很多）
@@ -80,7 +79,7 @@ class CustomYOLOLoss(nn.Module):
 
         return loss.mean() if loss.numel() > 0 else 0.0
 
-    def forward(self, pred_box, gt_box, feat_w, feat_h, pred_cls, cls_btm, gt_box_cls_indices):
+    def forward(self, pred_box, gt_box, feat_w, feat_h, pred_cls, cls_btm, gt_box_cls_indices, sim_proto_text):
         device = pred_box.device
         N = feat_w * feat_h
         B = pred_box.shape[0]
@@ -99,7 +98,7 @@ class CustomYOLOLoss(nn.Module):
         xs_norm = xs / feat_w
         ys_norm = ys / feat_h
         cls_btm_flat = cls_btm.flatten(2)
-        
+
         for b in range(B):
             pb = pred_box[b].permute(1, 0)          # [N,4]
             pc = pred_cls[b].squeeze(0)          # [N]
@@ -130,7 +129,6 @@ class CustomYOLOLoss(nn.Module):
             target_box = torch.zeros(N, 4, device=device)
             cls_target = torch.zeros(N, device=device)
             cls_score = torch.zeros(N, device=device)
-            best_iou = torch.zeros(N, device=device)
             target_cls_idx = torch.zeros(N, dtype=torch.long, device=device)
 
             for m in range(M):
@@ -149,6 +147,7 @@ class CustomYOLOLoss(nn.Module):
                 candidate_mask = (torch.abs(xs - gx) <
                                   radius_w) & (torch.abs(ys - gy) < radius_h)
 
+                candidate_mask = candidate_mask & (~pos_mask)
                 if not candidate_mask.any():
                     continue
                 cand_idx = torch.where(candidate_mask)[0]
@@ -158,11 +157,6 @@ class CustomYOLOLoss(nn.Module):
                 _, iou_cand = self.bbox_iou_loss(
                     cand_box, gb[m].unsqueeze(0).expand(len(cand_idx), 4))
 
-                # 只保留 iou_cand > best_iou 的
-                keep_compete = iou_cand > best_iou[cand_idx]
-                cand_idx = cand_idx[keep_compete]
-                iou_cand = iou_cand[keep_compete]
-
                 if len(cand_idx) == 0:
                     continue
 
@@ -170,7 +164,7 @@ class CustomYOLOLoss(nn.Module):
                 img_cls_all = cls_btm_flat[b]
                 cand_cls_logits = img_cls_all[cid, cand_idx]
                 cls_sim_weight = torch.sigmoid(cand_cls_logits)
-                align_score = iou_cand * torch.sqrt(cls_sim_weight + 1e-7)
+                align_score = iou_cand * (cls_sim_weight + 1e-7) ** 0.8
 
                 # TopK
                 gt_area = w * h
@@ -183,11 +177,10 @@ class CustomYOLOLoss(nn.Module):
                 current_idx = cand_idx[topk_idx]
                 tmp_iou = iou_cand[topk_idx]
 
-
-                fusion_label = torch.sqrt(tmp_iou + 1e-7)
+                # fusion_label = align_score[topk_idx]
+                fusion_label = (tmp_iou + 1e-7) ** 0.5
 
                 if len(current_idx) > 0:
-                    best_iou[current_idx] = tmp_iou
                     pos_mask[current_idx] = True
                     target_box[current_idx] = gb[m]
                     target_cls_idx[current_idx] = cid
@@ -209,16 +202,25 @@ class CustomYOLOLoss(nn.Module):
                 gt_label = target_cls_idx[pos_mask]
                 mul_cls_loss = self.ce_loss(mul_cls_pred, gt_label)
                 total_cls += mul_cls_loss
- 
- 
+
             else:
-                pass
+                total_ciou = total_ciou + 0.0 * pred_decoded.sum()
+                total_cls = total_cls + 0.0 * pred_decoded.sum()
 
             num_valid += 1
 
+        xB, N_txt, _ = sim_proto_text.shape
+
+        # 向量化批量计算，无python循环
+        target = torch.arange(N_txt, device=sim_proto_text.device).expand(xB, N_txt)
+        logits = sim_proto_text.transpose(1, 2)   # [B, num_class=N_txt, anchor_num=N_txt]
+        loss_all = F.cross_entropy(logits, target, reduction="none")  # [B, N_txt]
+        loss_proto = loss_all.mean()
+
         # 批次平均
         if num_valid == 0:
-            return pred_box.sum() * 0.0
+            zero_loss = 0.0 * pred_box.flatten().sum()
+            return zero_loss
 
-        total_loss = (total_ciou*5.0 + total_cls) / num_valid
+        total_loss = (total_ciou*2.5 + total_cls) / num_valid+0.3*loss_proto
         return total_loss
